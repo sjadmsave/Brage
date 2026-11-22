@@ -29,3 +29,7 @@ val TierMediumColor = Color(0xFF00D4FF)
 val TierHardColor = Color(0xFFFFB020)
 val TierExpertColor = Color(0xFFFF4D6D)
 val TierMasterColor = Color(0xFFA855F7)
+val TierQuantumColor = Color(0xFFD946EF)
+val TierOmegaColor = Color(0xFFFF6B35)
+
+

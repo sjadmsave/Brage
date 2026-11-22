@@ -24,12 +24,14 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -42,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,6 +72,7 @@ import com.example.ui.theme.WalnutCard
 import com.example.ui.theme.WalnutDark
 import com.example.ui.theme.WalnutMedium
 import com.example.ui.theme.WalnutSurface
+import kotlinx.coroutines.launch
 
 @Composable
 fun LevelSelectScreen(
@@ -77,11 +81,14 @@ fun LevelSelectScreen(
     onBack: () -> Unit
 ) {
     var selectedTier by remember { mutableStateOf<DifficultyTier?>(null) }
+    val gridState = rememberLazyGridState()
+    val scope = rememberCoroutineScope()
 
     val levelsToShow = remember(selectedTier) {
         val range = selectedTier?.range ?: (1..LevelCatalog.TOTAL_LEVELS)
         range.toList()
     }
+    val currentLevel = progress.highestUnlockedLevel.coerceIn(1, LevelCatalog.TOTAL_LEVELS)
 
     Box(modifier = Modifier.fillMaxSize()) {
         Image(
@@ -144,39 +151,78 @@ fun LevelSelectScreen(
                             color = BrassBright
                         )
                         Text(
-                            text = "${progress.completedCount} / 100 مستوى مكتمل",
+                            text = "${progress.completedCount} / ${LevelCatalog.TOTAL_LEVELS} مستوى مكتمل",
                             style = MaterialTheme.typography.labelMedium,
                             color = SandText
                         )
                     }
                 }
 
-                Surface(
-                    color = WalnutCard,
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, CopperAccent.copy(alpha = 0.65f))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    Surface(
+                        modifier = Modifier
+                            .height(40.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                selectedTier = null
+                                scope.launch {
+                                    gridState.animateScrollToItem((currentLevel - 1).coerceAtLeast(0))
+                                }
+                            }
+                            .testTag("jump_current_level_button"),
+                        color = WalnutCard,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, BrassGold.copy(alpha = 0.65f))
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Star,
-                            contentDescription = null,
-                            tint = CopperAccent,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = "${progress.totalStars}",
-                            color = CreamText,
-                            style = MaterialTheme.typography.labelLarge.copy(fontFamily = ChakraPetchFontFamily)
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.MyLocation,
+                                contentDescription = "الانتقال للمستوى الحالي",
+                                tint = BrassBright,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "$currentLevel",
+                                color = BrassBright,
+                                style = MaterialTheme.typography.labelLarge.copy(fontFamily = ChakraPetchFontFamily)
+                            )
+                        }
+                    }
+
+                    Surface(
+                        color = WalnutCard,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, CopperAccent.copy(alpha = 0.65f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Star,
+                                contentDescription = null,
+                                tint = CopperAccent,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "${progress.totalStars}",
+                                color = CreamText,
+                                style = MaterialTheme.typography.labelLarge.copy(fontFamily = ChakraPetchFontFamily)
+                            )
+                        }
                     }
                 }
             }
 
-            // Tier Filter Chips
+            // Tier Filter Chips (All 300 + 7 Tiers)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -188,7 +234,7 @@ fun LevelSelectScreen(
                 FilterChip(
                     selected = selectedTier == null,
                     onClick = { selectedTier = null },
-                    label = { Text("الكل (100)") },
+                    label = { Text("الكل (${LevelCatalog.TOTAL_LEVELS})") },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = BrassGold,
                         selectedLabelColor = WalnutDark,
@@ -216,8 +262,9 @@ fun LevelSelectScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // 100-Level Adaptive Grid
+            // 300-Level Adaptive Grid
             LazyVerticalGrid(
+                state = gridState,
                 columns = GridCells.Adaptive(minSize = 74.dp),
                 modifier = Modifier
                     .fillMaxSize()

@@ -12,9 +12,12 @@ import com.example.engine.SoundEffectsManager
 import com.example.engine.SoundPlayer
 import com.example.model.BoardHole
 import com.example.model.BoardSnapshot
+import com.example.model.BoardTheme
 import com.example.model.Bolt
 import com.example.model.DifficultyTier
+import com.example.model.GameMode
 import com.example.model.HintMove
+import com.example.model.LevelSpec
 import com.example.model.Particle
 import com.example.model.Plank
 import com.example.model.PlankStatus
@@ -30,6 +33,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -45,7 +51,13 @@ enum class HapticEvent {
     VICTORY
 }
 
+enum class FailReason {
+    TIME_UP,
+    OUT_OF_MOVES
+}
+
 data class GameUiState(
+    val mode: GameMode = GameMode.CLASSIC,
     val levelNumber: Int = 1,
     val tier: DifficultyTier = DifficultyTier.BEGINNER,
     val holes: List<BoardHole> = emptyList(),
@@ -58,19 +70,38 @@ data class GameUiState(
     val isComputingHint: Boolean = false,
     val hintUnavailable: Boolean = false,
     val moves: Int = 0,
+    val movesBudget: Int? = null,
     val parMoves: Int = 3,
     val canUndo: Boolean = false,
     val elapsedSeconds: Int = 0,
+    val remainingSeconds: Int? = null,
     val isWon: Boolean = false,
+    val isLost: Boolean = false,
+    val failReason: FailReason? = null,
     val starsEarned: Int = 0,
     val particles: List<Particle> = emptyList(),
     val soundEnabled: Boolean = true,
-    val hapticsEnabled: Boolean = true
+    val hapticsEnabled: Boolean = true,
+    val drillsLeft: Int = 1,
+    val cuttersLeft: Int = 1,
+    val isDrillMode: Boolean = false,
+    val isCutterMode: Boolean = false,
+    val statusMessage: String? = null,
+    val comboCount: Int = 0,
+    val sessionStreak: Int = 0,
+    val techCredits: Int = 60,
+    val lastCreditsEarned: Int = 0,
+    val boardTheme: BoardTheme = BoardTheme.CYBER_NAVY
 ) {
     val activePlanksCount: Int
         get() = planks.count { it.status == PlankStatus.PINNED || it.status == PlankStatus.SWINGING }
     val totalPlanksCount: Int
         get() = planks.size
+
+    companion object {
+        const val DRILL_REFILL_COST = 50
+        const val CUTTER_REFILL_COST = 75
+    }
 }
 
 class GameViewModel(application: Application) : AndroidViewModel(application) {
@@ -87,7 +118,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     private var physicsJob: Job? = null
     private var timerJob: Job? = null
     private var flashJob: Job? = null
+    private var messageJob: Job? = null
     private var holeById: Map<Int, BoardHole> = emptyMap()
+    private var lastDetachTimeMs: Long = 0L
 
     init {
         viewModelScope.launch {
@@ -96,7 +129,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update {
                     it.copy(
                         soundEnabled = progress.soundEnabled,
-                        hapticsEnabled = progress.hapticsEnabled
+                        hapticsEnabled = progress.hapticsEnabled,
+                        techCredits = progress.techCredits,
+                        boardTheme = progress.selectedTheme
                     )
                 }
             }
@@ -108,16 +143,42 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         soundManager = player
     }
 
-    fun loadLevel(levelNumber: Int) {
-        val spec = LevelCatalog.getLevel(levelNumber)
+    fun todayDateKey(): Int {
+        return SimpleDateFormat("yyyyMMdd", Locale.US).format(Date()).toIntOrNull() ?: 20261121
+    }
+
+    fun loadLevel(levelNumber: Int, mode: GameMode = GameMode.CLASSIC, keepStreak: Boolean = false) {
+        val currentStreak = if (keepStreak) _uiState.value.sessionStreak else 0
+        val spec: LevelSpec = when (mode) {
+            GameMode.CLASSIC -> LevelCatalog.getLevel(levelNumber)
+            GameMode.TIME_ATTACK -> LevelCatalog.getArcadeRoundLevel(levelNumber, modeSalt = 1)
+            GameMode.PRECISION -> LevelCatalog.getArcadeRoundLevel(levelNumber, modeSalt = 2)
+            GameMode.ENDLESS -> LevelCatalog.getArcadeRoundLevel(levelNumber, modeSalt = 3)
+            GameMode.DAILY -> LevelCatalog.getDailyLevel(todayDateKey())
+        }
+
         holeById = spec.holes.associateBy { it.id }
         undoStack.clear()
         physicsJob?.cancel()
         timerJob?.cancel()
         flashJob?.cancel()
+        messageJob?.cancel()
+        lastDetachTimeMs = 0L
+
+        val initialTimeBudget = if (mode == GameMode.TIME_ATTACK) {
+            (spec.parMoves * 5 + 24).coerceIn(45, 110)
+        } else {
+            null
+        }
+        val initialMoveBudget = if (mode == GameMode.PRECISION) {
+            spec.parMoves + 2
+        } else {
+            null
+        }
 
         _uiState.update { current ->
             current.copy(
+                mode = mode,
                 levelNumber = spec.levelNumber,
                 tier = spec.tier,
                 holes = spec.holes,
@@ -130,19 +191,32 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 isComputingHint = false,
                 hintUnavailable = false,
                 moves = 0,
+                movesBudget = initialMoveBudget,
                 parMoves = spec.parMoves,
                 canUndo = false,
                 elapsedSeconds = 0,
+                remainingSeconds = initialTimeBudget,
                 isWon = false,
+                isLost = false,
+                failReason = null,
                 starsEarned = 0,
-                particles = emptyList()
+                particles = emptyList(),
+                drillsLeft = if (mode == GameMode.PRECISION) 0 else 1,
+                cuttersLeft = if (mode == GameMode.CLASSIC || mode == GameMode.ENDLESS) 1 else 0,
+                isDrillMode = false,
+                isCutterMode = false,
+                statusMessage = null,
+                comboCount = 0,
+                sessionStreak = currentStreak,
+                lastCreditsEarned = 0
             )
         }
         startTimer()
     }
 
     fun restartLevel() {
-        loadLevel(_uiState.value.levelNumber)
+        val state = _uiState.value
+        loadLevel(state.levelNumber, state.mode, keepStreak = false)
     }
 
     fun toggleSound() {
@@ -155,10 +229,107 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repository.setSoundEnabled(enabled) }
     }
 
+    fun toggleDrillMode() {
+        val state = _uiState.value
+        if (state.isWon || state.isLost) return
+        if (state.drillsLeft <= 0) {
+            if (state.mode == GameMode.PRECISION) {
+                showTransientMessage("المثقاب غير متاح في تحدي الدقة")
+                return
+            }
+            val cost = GameUiState.DRILL_REFILL_COST
+            if (state.techCredits >= cost) {
+                _uiState.update {
+                    it.copy(
+                        drillsLeft = 1,
+                        techCredits = it.techCredits - cost,
+                        isDrillMode = true,
+                        isCutterMode = false,
+                        selectedBoltId = null,
+                        availableHoleIds = emptySet()
+                    )
+                }
+                soundManager.playPowerup()
+                emitHaptic(HapticEvent.SUCCESS)
+                showTransientMessage("تم شحن مثقاب الليزر (-$cost⚡) • اضغط مساحة فارغة")
+                viewModelScope.launch { repository.spendCredits(cost) }
+            } else {
+                soundManager.playBlocked()
+                showTransientMessage("تحتاج $cost⚡ طاقة رقمية لشحن المثقاب")
+            }
+            return
+        }
+        val next = !state.isDrillMode
+        _uiState.update {
+            it.copy(
+                isDrillMode = next,
+                isCutterMode = false,
+                selectedBoltId = null,
+                availableHoleIds = emptySet()
+            )
+        }
+        if (next) showTransientMessage("اضغط في أي مساحة فارغة لحفر منفذ ليزر جديد")
+    }
+
+    fun toggleCutterMode() {
+        val state = _uiState.value
+        if (state.isWon || state.isLost) return
+        if (state.cuttersLeft <= 0) {
+            if (state.mode == GameMode.PRECISION || state.mode == GameMode.TIME_ATTACK) {
+                showTransientMessage("القاطع مخصص للطور الكلاسيكي واللانهائي واليومي")
+                return
+            }
+            val cost = GameUiState.CUTTER_REFILL_COST
+            if (state.techCredits >= cost) {
+                _uiState.update {
+                    it.copy(
+                        cuttersLeft = 1,
+                        techCredits = it.techCredits - cost,
+                        isCutterMode = true,
+                        isDrillMode = false,
+                        selectedBoltId = null,
+                        availableHoleIds = emptySet()
+                    )
+                }
+                soundManager.playPowerup()
+                emitHaptic(HapticEvent.SUCCESS)
+                showTransientMessage("تم شحن قاطع النبضات (-$cost⚡) • اضغط على لوح")
+                viewModelScope.launch { repository.spendCredits(cost) }
+            } else {
+                soundManager.playBlocked()
+                showTransientMessage("تحتاج $cost⚡ طاقة رقمية لشحن القاطع")
+            }
+            return
+        }
+        val next = !state.isCutterMode
+        _uiState.update {
+            it.copy(
+                isCutterMode = next,
+                isDrillMode = false,
+                selectedBoltId = null,
+                availableHoleIds = emptySet()
+            )
+        }
+        if (next) showTransientMessage("اضغط على أي لوح لتفكيكه بالليزر فوراً")
+    }
+
     fun onBoardTap(boardX: Float, boardY: Float) {
         val state = _uiState.value
-        if (state.isWon) return
+        if (state.isWon || state.isLost) return
 
+        // Handle Laser Drill Tool
+        if (state.isDrillMode) {
+            handleDrillTap(boardX, boardY)
+            return
+        }
+
+        // Handle Pulse Cutter Tool
+        if (state.isCutterMode) {
+            handleCutterTap(boardX, boardY)
+            return
+        }
+
+        // 1. Check if tapped near any Bolt
         val tappedBolt = state.bolts.minByOrNull { bolt ->
             val h = holeById[bolt.holeId] ?: return@minByOrNull Float.MAX_VALUE
             hypot(boardX - h.x, boardY - h.y)
@@ -168,6 +339,34 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (tappedBolt != null) {
+            if (tappedBolt.reinforced) {
+                // First tap breaks the protective energy shield
+                undoStack.addLast(BoardSnapshot(state.holes, state.bolts, state.planks, state.moves))
+                val updatedBolts = state.bolts.map { b ->
+                    if (b.id == tappedBolt.id) b.copy(reinforced = false) else b
+                }
+                val h = holeById[tappedBolt.holeId]
+                val shieldSparks = if (h != null) spawnSparks(h.x, h.y, Color(0xFFFF4D6D), count = 12) else emptyList()
+                val avail = computeAvailableHoles(state.holes, updatedBolts, state.planks)
+                val nextMoves = state.moves + 1
+                _uiState.update {
+                    it.copy(
+                        bolts = updatedBolts,
+                        selectedBoltId = tappedBolt.id,
+                        availableHoleIds = avail,
+                        moves = nextMoves,
+                        canUndo = true,
+                        particles = it.particles + shieldSparks
+                    )
+                }
+                soundManager.playShieldBreak()
+                emitHaptic(HapticEvent.SUCCESS)
+                showTransientMessage("تم كسر درع البرغي! اختر منفذاً لنقله")
+                checkPrecisionOutOfMoves()
+                ensurePhysicsRunning()
+                return
+            }
+
             if (state.selectedBoltId == tappedBolt.id) {
                 _uiState.update { it.copy(selectedBoltId = null, availableHoleIds = emptySet()) }
             } else {
@@ -185,6 +384,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        // 2. If a bolt is selected, check target hole
         val selectedId = state.selectedBoltId ?: return
         val tappedHole = state.holes.minByOrNull { h ->
             hypot(boardX - h.x, boardY - h.y)
@@ -208,21 +408,96 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         executeMove(selectedId, tappedHole)
     }
 
+    private fun handleDrillTap(boardX: Float, boardY: Float) {
+        val state = _uiState.value
+        val clampedX = boardX.coerceIn(44f, BoardGeometry.BOARD_WIDTH - 44f)
+        val clampedY = boardY.coerceIn(58f, BoardGeometry.BOARD_HEIGHT - 44f)
+        val newId = (state.holes.maxOfOrNull { it.id } ?: 0) + 1
+        val candidate = BoardHole(id = newId, x = clampedX, y = clampedY)
+
+        val tooClose = state.holes.any { hypot(it.x - clampedX, it.y - clampedY) < 32f }
+        val coveredByPlank = state.planks.any { BoardGeometry.doesPlankBlockHole(it, candidate) }
+
+        if (tooClose || coveredByPlank) {
+            soundManager.playBlocked()
+            emitHaptic(HapticEvent.BLOCKED)
+            showTransientMessage("اختر نقطة فارغة بعيدة عن الألواح والمنافذ")
+            return
+        }
+
+        undoStack.addLast(BoardSnapshot(state.holes, state.bolts, state.planks, state.moves))
+        val newHoles = state.holes + candidate
+        holeById = newHoles.associateBy { it.id }
+        val sparks = spawnSparks(clampedX, clampedY, Color(0xFF00E699), count = 16)
+
+        _uiState.update {
+            it.copy(
+                holes = newHoles,
+                drillsLeft = (it.drillsLeft - 1).coerceAtLeast(0),
+                isDrillMode = false,
+                canUndo = true,
+                particles = it.particles + sparks
+            )
+        }
+        soundManager.playDrill()
+        emitHaptic(HapticEvent.SUCCESS)
+        showTransientMessage("تم حفر منفذ ليزر جديد بنجاح!")
+        ensurePhysicsRunning()
+    }
+
+    private fun handleCutterTap(boardX: Float, boardY: Float) {
+        val state = _uiState.value
+        val targetPlank = state.planks
+            .filter { it.status == PlankStatus.PINNED || it.status == PlankStatus.SWINGING }
+            .sortedByDescending { it.layer }
+            .firstOrNull { plank ->
+                val (lx, ly) = BoardGeometry.worldToLocal(plank, boardX, boardY)
+                abs(lx) <= plank.width * 0.5f + 8f && abs(ly) <= plank.height * 0.5f + 8f
+            }
+
+        if (targetPlank == null) {
+            soundManager.playBlocked()
+            showTransientMessage("اضغط مباشرة على أحد الألواح لتفكيكه")
+            return
+        }
+
+        undoStack.addLast(BoardSnapshot(state.holes, state.bolts, state.planks, state.moves))
+        val sparks = spawnSparks(targetPlank.centerX, targetPlank.centerY, targetPlank.woodStyle.grainColor, count = 20)
+        val newPlanks = state.planks.map { p ->
+            if (p.id == targetPlank.id) {
+                p.copy(
+                    status = PlankStatus.FALLING,
+                    velocityX = Random.nextInt(-40, 41).toFloat(),
+                    velocityY = 60f,
+                    angularVelocity = 2.2f
+                )
+            } else {
+                p
+            }
+        }
+        _uiState.update {
+            it.copy(
+                planks = newPlanks,
+                cuttersLeft = (it.cuttersLeft - 1).coerceAtLeast(0),
+                isCutterMode = false,
+                canUndo = true,
+                particles = it.particles + sparks
+            )
+        }
+        soundManager.playPlankDetached()
+        emitHaptic(HapticEvent.PLANK_DROP)
+        ensurePhysicsRunning()
+    }
+
     private fun executeMove(boltId: Int, targetHole: BoardHole) {
         val state = _uiState.value
-        undoStack.addLast(
-            BoardSnapshot(
-                bolts = state.bolts,
-                planks = state.planks,
-                moves = state.moves
-            )
-        )
+        undoStack.addLast(BoardSnapshot(state.holes, state.bolts, state.planks, state.moves))
 
         val newBolts = state.bolts.map { b ->
             if (b.id == boltId) b.copy(holeId = targetHole.id) else b
         }
 
-        var droppedAnyPlank = false
+        var detachedCount = 0
         val newParticles = state.particles.toMutableList()
         newParticles.addAll(spawnSparks(targetHole.x, targetHole.y, Color(0xFF00D4FF), count = 12))
 
@@ -233,7 +508,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 val pins = BoardGeometry.getPinningBolts(plank, newBolts, holeById)
                 when (pins.size) {
                     0 -> {
-                        droppedAnyPlank = true
+                        detachedCount++
                         newParticles.addAll(
                             spawnSparks(plank.centerX, plank.centerY, plank.woodStyle.grainColor, count = 16)
                         )
@@ -251,13 +526,27 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         soundManager.playBoltLock()
-        if (droppedAnyPlank) {
+
+        var bonusTime = 0
+        var newCombo = state.comboCount
+        if (detachedCount > 0) {
             soundManager.playPlankDetached()
             emitHaptic(HapticEvent.PLANK_DROP)
+            val nowMs = System.currentTimeMillis()
+            newCombo = if (nowMs - lastDetachTimeMs <= 2_800L) state.comboCount + detachedCount else detachedCount
+            lastDetachTimeMs = nowMs
+            if (newCombo >= 2) {
+                showTransientMessage("كومبو x$newCombo! ⚡")
+            }
+            if (state.mode == GameMode.TIME_ATTACK) {
+                bonusTime = detachedCount * 4
+                showTransientMessage("+${bonusTime}ث بونص! ⏱️")
+            }
         } else {
             emitHaptic(HapticEvent.SUCCESS)
         }
 
+        val nextMoves = state.moves + 1
         _uiState.update {
             it.copy(
                 bolts = newBolts,
@@ -266,19 +555,47 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 availableHoleIds = emptySet(),
                 hintMove = null,
                 hintUnavailable = false,
-                moves = it.moves + 1,
+                moves = nextMoves,
+                remainingSeconds = it.remainingSeconds?.plus(bonusTime),
                 canUndo = undoStack.isNotEmpty(),
-                particles = newParticles
+                particles = newParticles,
+                comboCount = newCombo
             )
         }
 
+        checkPrecisionOutOfMoves()
         ensurePhysicsRunning()
+    }
+
+    private fun checkPrecisionOutOfMoves() {
+        val state = _uiState.value
+        val budget = state.movesBudget ?: return
+        if (state.moves >= budget) {
+            val anyStillPinned = state.planks.any {
+                it.status == PlankStatus.PINNED || it.status == PlankStatus.SWINGING
+            }
+            if (anyStillPinned && !state.isWon && !state.isLost) {
+                timerJob?.cancel()
+                soundManager.playFail()
+                emitHaptic(HapticEvent.BLOCKED)
+                _uiState.update {
+                    it.copy(
+                        isLost = true,
+                        failReason = FailReason.OUT_OF_MOVES,
+                        selectedBoltId = null,
+                        availableHoleIds = emptySet()
+                    )
+                }
+            }
+        }
     }
 
     fun undoMove() {
         val snapshot = undoStack.removeLastOrNull() ?: return
+        holeById = snapshot.holes.associateBy { it.id }
         _uiState.update {
             it.copy(
+                holes = snapshot.holes,
                 bolts = snapshot.bolts,
                 planks = snapshot.planks,
                 moves = snapshot.moves,
@@ -286,6 +603,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 availableHoleIds = emptySet(),
                 hintMove = null,
                 hintUnavailable = false,
+                isDrillMode = false,
+                isCutterMode = false,
                 canUndo = undoStack.isNotEmpty()
             )
         }
@@ -296,7 +615,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     fun requestHint() {
         val state = _uiState.value
-        if (state.isWon || state.isComputingHint) return
+        if (state.isWon || state.isLost || state.isComputingHint) return
 
         _uiState.update { it.copy(isComputingHint = true, hintUnavailable = false) }
         viewModelScope.launch {
@@ -321,7 +640,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                         selectedBoltId = move.boltId,
                         availableHoleIds = avail,
                         isComputingHint = false,
-                        hintUnavailable = false
+                        hintUnavailable = false,
+                        isDrillMode = false,
+                        isCutterMode = false
                     )
                 }
                 soundManager.playHint()
@@ -370,9 +691,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                             val pins = BoardGeometry.getPinningBolts(plank, state.bolts, holeById)
                             if (pins.isEmpty()) {
                                 stillAnimating = true
-                                updatedPlanks.add(
-                                    plank.copy(status = PlankStatus.FALLING, velocityY = 45f)
-                                )
+                                updatedPlanks.add(plank.copy(status = PlankStatus.FALLING, velocityY = 45f))
                             } else if (pins.size >= 2) {
                                 updatedPlanks.add(plank.copy(status = PlankStatus.PINNED, angularVelocity = 0f))
                             } else {
@@ -388,19 +707,17 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                                     if (abs(dx) < 2.0f && dy < 0f) {
                                         torque += 2.8f
                                     }
-                                    var nextAngVel = (plank.angularVelocity + torque * dt * 6.2f) * 0.88f
-                                    var nextAngle = plank.angleRad + nextAngVel * dt
-                                    var (nextCx, nextCy) = BoardGeometry.centerFromPivot(
+                                    val nextAngVel = (plank.angularVelocity + torque * dt * 6.2f) * 0.88f
+                                    val nextAngle = plank.angleRad + nextAngVel * dt
+                                    val (nextCx, nextCy) = BoardGeometry.centerFromPivot(
                                         pivotHole.x, pivotHole.y, localPivot, nextAngle
                                     )
-
                                     val candidate = plank.copy(
                                         centerX = nextCx,
                                         centerY = nextCy,
                                         angleRad = nextAngle,
                                         angularVelocity = nextAngVel
                                     )
-
                                     val collided = state.planks.any { other ->
                                         other.id != plank.id &&
                                             other.layer == plank.layer &&
@@ -408,7 +725,6 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                                             other.status != PlankStatus.CLEARED &&
                                             BoardGeometry.obbsOverlap(candidate, other, padding = -2.5f)
                                     }
-
                                     if (collided) {
                                         updatedPlanks.add(plank.copy(angularVelocity = -plank.angularVelocity * 0.2f))
                                     } else {
@@ -483,23 +799,40 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
                 val allCleared = updatedPlanks.isNotEmpty() && updatedPlanks.all { it.status == PlankStatus.CLEARED }
 
-                if (allCleared && !state.isWon) {
+                if (allCleared && !state.isWon && !state.isLost) {
                     val stars = calculateStars(state.moves, state.parMoves)
                     val confetti = spawnVictoryConfetti()
+                    val nextStreak = if (state.mode == GameMode.TIME_ATTACK) state.sessionStreak + 1 else state.sessionStreak
+                    val rewardCredits = when (state.mode) {
+                        GameMode.CLASSIC -> stars * 15 + (state.comboCount * 3)
+                        GameMode.TIME_ATTACK -> 30 + nextStreak * 8
+                        GameMode.PRECISION -> 45
+                        GameMode.ENDLESS -> 25 + (state.levelNumber * 2).coerceAtMost(60)
+                        GameMode.DAILY -> 80
+                    }
                     _uiState.update {
                         it.copy(
                             planks = updatedPlanks,
                             particles = updatedParticles + confetti,
                             availableHoleIds = availHoles,
                             isWon = true,
-                            starsEarned = stars
+                            starsEarned = stars,
+                            sessionStreak = nextStreak,
+                            lastCreditsEarned = rewardCredits,
+                            techCredits = it.techCredits + rewardCredits
                         )
                     }
                     timerJob?.cancel()
                     soundManager.playVictory()
                     emitHaptic(HapticEvent.VICTORY)
                     viewModelScope.launch {
-                        repository.recordLevelComplete(state.levelNumber, stars, state.moves)
+                        when (state.mode) {
+                            GameMode.CLASSIC -> repository.recordLevelComplete(state.levelNumber, stars, state.moves, rewardCredits)
+                            GameMode.TIME_ATTACK -> repository.recordTimeAttackStreak(nextStreak, rewardCredits)
+                            GameMode.PRECISION -> repository.recordPrecisionClear(rewardCredits)
+                            GameMode.ENDLESS -> repository.recordEndlessRound(state.levelNumber, rewardCredits)
+                            GameMode.DAILY -> repository.recordDailyCompleted(todayDateKey(), rewardCredits)
+                        }
                     }
                 } else {
                     _uiState.update {
@@ -511,12 +844,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                if (!stillAnimating && !allCleared) {
-                    break
-                }
-                if (allCleared && updatedParticles.isEmpty()) {
-                    break
-                }
+                if (!stillAnimating && !allCleared) break
+                if (allCleared && updatedParticles.isEmpty()) break
             }
         }
     }
@@ -526,8 +855,30 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         timerJob = viewModelScope.launch {
             while (true) {
                 delay(1000L)
-                if (!_uiState.value.isWon) {
-                    _uiState.update { it.copy(elapsedSeconds = it.elapsedSeconds + 1) }
+                val s = _uiState.value
+                if (s.isWon || s.isLost) continue
+                val nextElapsed = s.elapsedSeconds + 1
+                val rem = s.remainingSeconds
+                if (rem != null) {
+                    val nextRem = (rem - 1).coerceAtLeast(0)
+                    if (nextRem == 0) {
+                        soundManager.playFail()
+                        emitHaptic(HapticEvent.BLOCKED)
+                        _uiState.update {
+                            it.copy(
+                                elapsedSeconds = nextElapsed,
+                                remainingSeconds = 0,
+                                isLost = true,
+                                failReason = FailReason.TIME_UP,
+                                sessionStreak = 0
+                            )
+                        }
+                        break
+                    } else {
+                        _uiState.update { it.copy(elapsedSeconds = nextElapsed, remainingSeconds = nextRem) }
+                    }
+                } else {
+                    _uiState.update { it.copy(elapsedSeconds = nextElapsed) }
                 }
             }
         }
@@ -539,6 +890,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(blockedFlashHoleId = holeId) }
             delay(360L)
             _uiState.update { it.copy(blockedFlashHoleId = null) }
+        }
+    }
+
+    private fun showTransientMessage(msg: String) {
+        messageJob?.cancel()
+        messageJob = viewModelScope.launch {
+            _uiState.update { it.copy(statusMessage = msg) }
+            delay(1_800L)
+            _uiState.update { it.copy(statusMessage = null) }
         }
     }
 

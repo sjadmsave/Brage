@@ -24,7 +24,8 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
-import androidx.compose.material.icons.rounded.GridView
+import androidx.compose.material.icons.rounded.Build
+import androidx.compose.material.icons.rounded.ContentCut
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
@@ -53,7 +54,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.engine.LevelCatalog
+import com.example.model.GameMode
 import com.example.model.UserProgressState
+import com.example.ui.components.FailDialog
 import com.example.ui.components.LevelCompleteDialog
 import com.example.ui.components.SettingsDialog
 import com.example.ui.components.TierBadge
@@ -62,7 +65,9 @@ import com.example.ui.components.WorkshopActionChip
 import com.example.ui.components.formatTime
 import com.example.ui.theme.BrassBright
 import com.example.ui.theme.ChakraPetchFontFamily
+import com.example.ui.theme.CopperAccent
 import com.example.ui.theme.CrimsonBlocked
+import com.example.ui.theme.EmeraldValid
 import com.example.ui.theme.SandText
 import com.example.ui.theme.SkyHint
 import com.example.ui.theme.WalnutCard
@@ -74,6 +79,7 @@ import com.example.viewmodel.HapticEvent
 
 @Composable
 fun GameScreen(
+    mode: GameMode = GameMode.CLASSIC,
     levelNumber: Int,
     viewModel: GameViewModel,
     progress: UserProgressState,
@@ -89,8 +95,8 @@ fun GameScreen(
     val haptic = LocalHapticFeedback.current
     var showSettings by remember { mutableStateOf(false) }
 
-    LaunchedEffect(levelNumber) {
-        viewModel.loadLevel(levelNumber)
+    LaunchedEffect(mode, levelNumber) {
+        viewModel.loadLevel(levelNumber, mode = mode, keepStreak = false)
     }
 
     LaunchedEffect(Unit) {
@@ -102,6 +108,14 @@ fun GameScreen(
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             }
         }
+    }
+
+    val headerTitle = when (uiState.mode) {
+        GameMode.CLASSIC -> "المستوى ${uiState.levelNumber}"
+        GameMode.TIME_ATTACK -> "سباق الزمن • ${uiState.levelNumber}"
+        GameMode.PRECISION -> "تحدي الدقة • ${uiState.levelNumber}"
+        GameMode.ENDLESS -> "اللانهائي • جولة ${uiState.levelNumber}"
+        GameMode.DAILY -> "التحدي اليومي"
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -161,31 +175,73 @@ fun GameScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "المستوى ${uiState.levelNumber}",
-                            style = MaterialTheme.typography.headlineMedium,
+                            text = headerTitle,
+                            style = MaterialTheme.typography.titleLarge,
                             color = BrassBright
                         )
-                        TierBadge(tier = uiState.tier)
+                        if (uiState.mode == GameMode.TIME_ATTACK && uiState.sessionStreak > 0) {
+                            Surface(
+                                color = CopperAccent.copy(alpha = 0.18f),
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, CopperAccent.copy(alpha = 0.75f))
+                            ) {
+                                Text(
+                                    text = "🔥 ${uiState.sessionStreak}",
+                                    color = CopperAccent,
+                                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = ChakraPetchFontFamily),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                        } else {
+                            TierBadge(tier = uiState.tier)
+                        }
                     }
+
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val budget = uiState.movesBudget
+                        val movesText = if (budget != null) {
+                            "الحركات: ${uiState.moves}/$budget"
+                        } else {
+                            "الحركات: ${uiState.moves}"
+                        }
+                        val movesColor = if (budget != null && budget - uiState.moves <= 2) {
+                            CrimsonBlocked
+                        } else {
+                            SandText
+                        }
+
                         Text(
-                            text = "الحركات: ${uiState.moves}",
+                            text = movesText,
                             style = MaterialTheme.typography.labelMedium.copy(fontFamily = ChakraPetchFontFamily),
-                            color = SandText
+                            color = movesColor,
+                            modifier = Modifier.testTag("hud_moves_text")
                         )
                         Text(
                             text = "الألواح: ${uiState.activePlanksCount}/${uiState.totalPlanksCount}",
                             style = MaterialTheme.typography.labelMedium.copy(fontFamily = ChakraPetchFontFamily),
                             color = SandText
                         )
-                        Text(
-                            text = formatTime(uiState.elapsedSeconds),
-                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = ChakraPetchFontFamily),
-                            color = SandText
-                        )
+
+                        val rem = uiState.remainingSeconds
+                        if (rem != null) {
+                            val timeColor = if (rem <= 10) CrimsonBlocked else CopperAccent
+                            Text(
+                                text = "⏱ ${formatTime(rem)}",
+                                style = MaterialTheme.typography.labelMedium.copy(fontFamily = ChakraPetchFontFamily),
+                                color = timeColor,
+                                modifier = Modifier.testTag("hud_timer_text")
+                            )
+                        } else {
+                            Text(
+                                text = formatTime(uiState.elapsedSeconds),
+                                style = MaterialTheme.typography.labelMedium.copy(fontFamily = ChakraPetchFontFamily),
+                                color = SandText,
+                                modifier = Modifier.testTag("hud_timer_text")
+                            )
+                        }
                     }
                 }
 
@@ -225,11 +281,16 @@ fun GameScreen(
                 }
             }
 
-            // Contextual helper banner
-            AnimatedVisibility(
-                visible = uiState.hintMove != null || uiState.hintUnavailable || (uiState.levelNumber == 1 && uiState.moves == 0)
-            ) {
+            // Contextual status / combo / tutorial / hint banner
+            val showTutorial = uiState.mode == GameMode.CLASSIC && uiState.levelNumber == 1 && uiState.moves == 0
+            val showBanner = uiState.statusMessage != null ||
+                uiState.hintMove != null ||
+                uiState.hintUnavailable ||
+                showTutorial
+
+            AnimatedVisibility(visible = showBanner) {
                 val (bannerText, bannerColor) = when {
+                    uiState.statusMessage != null -> (uiState.statusMessage ?: "") to EmeraldValid
                     uiState.hintMove != null -> "اتبع المسار المضيء: انقل البرغي إلى المنفذ المحدد" to SkyHint
                     uiState.hintUnavailable -> "جرّب التراجع خطوة أو إعادة المحاولة لحل أسرع" to CrimsonBlocked
                     else -> "اضغط على أي برغي لفكّه، ثم اضغط على منفذ متاح" to BrassBright
@@ -271,18 +332,18 @@ fun GameScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Bottom Action Bar
+            // Bottom Action Bar (Undo, Restart, Hint, Laser Drill, Pulse Cutter)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 600.dp)
                     .padding(bottom = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 WorkshopActionChip(
                     icon = Icons.AutoMirrored.Rounded.Undo,
                     label = "تراجع",
-                    enabled = uiState.canUndo && !uiState.isWon,
+                    enabled = uiState.canUndo && !uiState.isWon && !uiState.isLost,
                     onClick = viewModel::undoMove,
                     modifier = Modifier
                         .weight(1f)
@@ -299,39 +360,97 @@ fun GameScreen(
                 )
                 WorkshopActionChip(
                     icon = Icons.Rounded.Lightbulb,
-                    label = if (uiState.isComputingHint) "تحليل..." else "تلميح",
-                    enabled = !uiState.isWon && !uiState.isComputingHint,
+                    label = if (uiState.isComputingHint) "تحليل" else "تلميح",
+                    enabled = !uiState.isWon && !uiState.isLost && !uiState.isComputingHint,
                     isActive = uiState.hintMove != null,
                     onClick = viewModel::requestHint,
                     modifier = Modifier
                         .weight(1f)
                         .testTag("hint_button")
                 )
+                val canRefillDrill = uiState.drillsLeft == 0 &&
+                    uiState.mode != GameMode.PRECISION &&
+                    uiState.techCredits >= com.example.viewmodel.GameUiState.DRILL_REFILL_COST
                 WorkshopActionChip(
-                    icon = Icons.Rounded.GridView,
-                    label = "المستويات",
-                    onClick = onOpenLevels,
+                    icon = Icons.Rounded.Build,
+                    label = when {
+                        uiState.drillsLeft > 0 -> "مثقاب (${uiState.drillsLeft})"
+                        uiState.mode != GameMode.PRECISION -> "مثقاب 50⚡"
+                        else -> "مثقاب"
+                    },
+                    enabled = !uiState.isWon && !uiState.isLost && (uiState.drillsLeft > 0 || canRefillDrill),
+                    isActive = uiState.isDrillMode,
+                    onClick = viewModel::toggleDrillMode,
                     modifier = Modifier
                         .weight(1f)
-                        .testTag("game_levels_button")
+                        .testTag("drill_button")
+                )
+                val canRefillCutter = uiState.cuttersLeft == 0 &&
+                    (uiState.mode == GameMode.CLASSIC || uiState.mode == GameMode.ENDLESS || uiState.mode == GameMode.DAILY) &&
+                    uiState.techCredits >= com.example.viewmodel.GameUiState.CUTTER_REFILL_COST
+                WorkshopActionChip(
+                    icon = Icons.Rounded.ContentCut,
+                    label = when {
+                        uiState.cuttersLeft > 0 -> "قاطع (${uiState.cuttersLeft})"
+                        uiState.mode == GameMode.CLASSIC || uiState.mode == GameMode.ENDLESS || uiState.mode == GameMode.DAILY -> "قاطع 75⚡"
+                        else -> "قاطع"
+                    },
+                    enabled = !uiState.isWon && !uiState.isLost && (uiState.cuttersLeft > 0 || canRefillCutter),
+                    isActive = uiState.isCutterMode,
+                    onClick = viewModel::toggleCutterMode,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("cutter_button")
                 )
             }
         }
 
         if (uiState.isWon) {
-            val isFinal = uiState.levelNumber >= LevelCatalog.TOTAL_LEVELS
+            val isFinal = uiState.mode == GameMode.CLASSIC && uiState.levelNumber >= LevelCatalog.TOTAL_LEVELS
             LevelCompleteDialog(
+                mode = uiState.mode,
                 levelNumber = uiState.levelNumber,
                 starsEarned = uiState.starsEarned,
                 moves = uiState.moves,
                 elapsedSeconds = uiState.elapsedSeconds,
+                sessionStreak = uiState.sessionStreak,
+                creditsEarned = uiState.lastCreditsEarned,
                 isFinalLevel = isFinal,
                 onNextLevel = {
-                    val next = (uiState.levelNumber + 1).coerceAtMost(LevelCatalog.TOTAL_LEVELS)
-                    onPlayLevel(next)
+                    when (uiState.mode) {
+                        GameMode.CLASSIC -> {
+                            val next = (uiState.levelNumber + 1).coerceAtMost(LevelCatalog.TOTAL_LEVELS)
+                            onPlayLevel(next)
+                        }
+                        GameMode.TIME_ATTACK, GameMode.PRECISION, GameMode.ENDLESS -> {
+                            viewModel.loadLevel(
+                                levelNumber = uiState.levelNumber + 1,
+                                mode = uiState.mode,
+                                keepStreak = (uiState.mode == GameMode.TIME_ATTACK)
+                            )
+                        }
+                        GameMode.DAILY -> onBack()
+                    }
                 },
                 onReplay = viewModel::restartLevel,
-                onLevelsMap = onOpenLevels
+                onLevelsMap = {
+                    if (uiState.mode == GameMode.CLASSIC) {
+                        onOpenLevels()
+                    } else {
+                        onBack()
+                    }
+                }
+            )
+        }
+
+        if (uiState.isLost) {
+            FailDialog(
+                failReason = uiState.failReason,
+                mode = uiState.mode,
+                levelNumber = uiState.levelNumber,
+                moves = uiState.moves,
+                onRetry = viewModel::restartLevel,
+                onHome = onBack
             )
         }
 

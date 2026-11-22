@@ -1,6 +1,6 @@
 <resources>
     <string name="app_name">فك البراغي</string>
-    <string name="app_subtitle">الألغاز الرقمية للألواح • 100 مستوى تقني</string>
+    <string name="app_subtitle">الألغاز الرقمية للألواح • 300 مستوى و5 أنماط</string>
     <string name="continue_playing">متابعة اللعب</string>
     <string name="start_playing">ابدأ اللعب</string>
     <string name="levels_map">خريطة المستويات</string>
@@ -17,7 +17,7 @@
     <string name="next_level">المستوى التالي</string>
     <string name="replay">إعادة اللعب</string>
     <string name="level_complete">تمت المهمة بنجاح!</string>
-    <string name="all_levels_complete">إنجاز أسطوري! أتممت الـ 100 مستوى</string>
+    <string name="all_levels_complete">إنجاز أسطوري! أتممت الـ 300 مستوى</string>
     <string name="offline_badge">يعمل بدون إنترنت</string>
     <string name="back">رجوع</string>
     <string name="close">إغلاق</string>

@@ -28,6 +28,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import com.example.engine.BoardGeometry
 import com.example.model.BoardHole
+import com.example.model.BoardTheme
 import com.example.model.Plank
 import com.example.model.PlankStatus
 import com.example.ui.theme.BrassBright
@@ -96,7 +97,7 @@ fun WoodBoardCanvas(
             scale(scaleX = scale, scaleY = scale, pivot = Offset.Zero)
         }) {
             // 1. Cyber-Tech Chassis & Blueprint Grid
-            drawCyberChassisFrame()
+            drawCyberChassisFrame(uiState.boardTheme)
 
             // 2. Laser-cut Socket Ports
             for (hole in uiState.holes) {
@@ -152,6 +153,7 @@ fun WoodBoardCanvas(
                     center = Offset(hole.x, hole.y),
                     isSelected = isSelected,
                     isHintSource = isHintSource,
+                    isReinforced = bolt.reinforced,
                     pulse = pulse
                 )
             }
@@ -187,22 +189,23 @@ fun WoodBoardCanvas(
     }
 }
 
-private fun DrawScope.drawCyberChassisFrame() {
+private fun DrawScope.drawCyberChassisFrame(theme: BoardTheme) {
     val w = BoardGeometry.BOARD_WIDTH
     val h = BoardGeometry.BOARD_HEIGHT
+    val accent = theme.accentColor
 
     // Outer ambient glow shadow
     drawRoundRect(
-        color = Color(0xFF00D4FF).copy(alpha = 0.08f),
+        color = accent.copy(alpha = 0.09f),
         topLeft = Offset(-2f, -2f),
         size = Size(w + 4f, h + 4f),
         cornerRadius = CornerRadius(24f, 24f)
     )
 
-    // Brushed dark titanium chassis border
+    // Brushed titanium chassis border
     drawRoundRect(
         brush = Brush.linearGradient(
-            colors = listOf(Color(0xFF263B63), Color(0xFF101B33), Color(0xFF1E3257)),
+            colors = listOf(theme.frameTopColor, theme.frameBottomColor, theme.frameTopColor.copy(alpha = 0.85f)),
             start = Offset.Zero,
             end = Offset(w, h)
         ),
@@ -215,7 +218,7 @@ private fun DrawScope.drawCyberChassisFrame() {
     val inset = 10f
     drawRoundRect(
         brush = Brush.verticalGradient(
-            colors = listOf(Color(0xFF080E1C), Color(0xFF0C1529), Color(0xFF070C18))
+            colors = listOf(theme.deckTopColor, theme.frameBottomColor.copy(alpha = 0.45f), theme.deckBottomColor)
         ),
         topLeft = Offset(inset, inset),
         size = Size(w - inset * 2f, h - inset * 2f),
@@ -227,7 +230,7 @@ private fun DrawScope.drawCyberChassisFrame() {
     var gx = inset + gridStep
     while (gx < w - inset) {
         drawLine(
-            color = BrassGold.copy(alpha = 0.07f),
+            color = accent.copy(alpha = 0.08f),
             start = Offset(gx, inset + 4f),
             end = Offset(gx, h - inset - 4f),
             strokeWidth = 1f
@@ -237,7 +240,7 @@ private fun DrawScope.drawCyberChassisFrame() {
     var gy = inset + gridStep
     while (gy < h - inset) {
         drawLine(
-            color = BrassGold.copy(alpha = 0.07f),
+            color = accent.copy(alpha = 0.08f),
             start = Offset(inset + 4f, gy),
             end = Offset(w - inset - 4f, gy),
             strokeWidth = 1f
@@ -245,29 +248,25 @@ private fun DrawScope.drawCyberChassisFrame() {
         gy += gridStep
     }
 
-    // Glowing cyan border trace
+    // Glowing border trace
     drawRoundRect(
-        color = BrassGold.copy(alpha = 0.42f),
+        color = accent.copy(alpha = 0.48f),
         topLeft = Offset(inset, inset),
         size = Size(w - inset * 2f, h - inset * 2f),
         cornerRadius = CornerRadius(16f, 16f),
         style = Stroke(width = 1.4f)
     )
 
-    // 4 Corner neon cyan sensor brackets
+    // 4 Corner neon sensor brackets
     val cornerLen = 18f
     val m = 5f
-    val bracketColor = BrassBright.copy(alpha = 0.85f)
-    // Top-left
+    val bracketColor = accent.copy(alpha = 0.90f)
     drawLine(bracketColor, Offset(m, m + cornerLen), Offset(m, m + 6f), strokeWidth = 2.2f, cap = StrokeCap.Round)
     drawLine(bracketColor, Offset(m + 6f, m), Offset(m + cornerLen, m), strokeWidth = 2.2f, cap = StrokeCap.Round)
-    // Top-right
     drawLine(bracketColor, Offset(w - m, m + cornerLen), Offset(w - m, m + 6f), strokeWidth = 2.2f, cap = StrokeCap.Round)
     drawLine(bracketColor, Offset(w - m - 6f, m), Offset(w - m - cornerLen, m), strokeWidth = 2.2f, cap = StrokeCap.Round)
-    // Bottom-left
     drawLine(bracketColor, Offset(m, h - m - cornerLen), Offset(m, h - m - 6f), strokeWidth = 2.2f, cap = StrokeCap.Round)
     drawLine(bracketColor, Offset(m + 6f, h - m), Offset(m + cornerLen, h - m), strokeWidth = 2.2f, cap = StrokeCap.Round)
-    // Bottom-right
     drawLine(bracketColor, Offset(w - m, h - m - cornerLen), Offset(w - m, h - m - 6f), strokeWidth = 2.2f, cap = StrokeCap.Round)
     drawLine(bracketColor, Offset(w - m - 6f, h - m), Offset(w - m - cornerLen, h - m), strokeWidth = 2.2f, cap = StrokeCap.Round)
 }
@@ -444,12 +443,31 @@ private fun DrawScope.drawTechBolt(
     center: Offset,
     isSelected: Boolean,
     isHintSource: Boolean,
+    isReinforced: Boolean,
     pulse: Float
 ) {
     val scale = if (isSelected) 1.22f + pulse * 0.05f else 1.0f
     val liftY = if (isSelected) -3.5f else 0f
     val c = center + Offset(0f, liftY)
     val radius = 12.5f * scale
+
+    // Protective energy shield ring on reinforced bolts
+    if (isReinforced) {
+        drawCircle(
+            color = CrimsonBlocked.copy(alpha = 0.24f + pulse * 0.16f),
+            radius = radius + 6.5f,
+            center = c
+        )
+        drawCircle(
+            color = CrimsonBlocked,
+            radius = radius + 5.5f,
+            center = c,
+            style = Stroke(
+                width = 2.6f,
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 4f), phase = pulse * 10f)
+            )
+        )
+    }
 
     // Selection or hint holographic ring
     if (isSelected) {

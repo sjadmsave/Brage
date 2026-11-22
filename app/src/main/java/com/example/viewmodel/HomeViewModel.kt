@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.ProgressRepository
+import com.example.model.BoardTheme
 import com.example.model.UserProgressState
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -30,6 +31,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setUnlockAllMode(enabled: Boolean) {
         viewModelScope.launch { repository.setUnlockAllMode(enabled) }
+    }
+
+    fun unlockOrSelectTheme(theme: BoardTheme) {
+        viewModelScope.launch { repository.unlockAndSelectTheme(theme) }
     }
 
     fun resetProgress() {
